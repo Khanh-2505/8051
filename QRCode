@@ -1,0 +1,329 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using AForge.Video;
+using AForge.Video.DirectShow;
+using ZXing;
+using ZXing.Aztec;
+using System.Data.OleDb;
+using S7.Net;
+
+namespace ReadQRCode
+{
+    public partial class Form1 : Form
+    {
+        public Form1()
+        {
+            InitializeComponent();
+        }
+        FilterInfoCollection filterInfoCollection;
+        VideoCaptureDevice captureDevice;
+        CancellationTokenSource cancellationTokenSource;
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            filterInfoCollection = new FilterInfoCollection(FilterCategory.VideoInputDevice);
+            foreach (FilterInfo Device in filterInfoCollection)
+                cboDevice.Items.Add(Device.Name);
+            if (cboDevice.Items.Count > 0)
+            {
+                cboDevice.SelectedIndex = 0;
+                captureDevice = new VideoCaptureDevice();
+            }
+        }
+        private void btStart_Click(object sender, EventArgs e)
+        {     
+            if (btStart.Text == "START")
+            {
+                captureDevice = new VideoCaptureDevice(filterInfoCollection[cboDevice.SelectedIndex].MonikerString);
+                captureDevice.NewFrame += CaptureDevice_NewFrame;
+                captureDevice.Start();
+                cancellationTokenSource = new CancellationTokenSource();
+                var sourcetoken = cancellationTokenSource.Token;
+                btStart.Text = "STOP";
+                onStartScan(sourcetoken);
+            }
+            else
+            {
+                btStart.Text = "START";
+                cancellationTokenSource.Cancel();
+                if (captureDevice != null)
+                {
+                    if (captureDevice.IsRunning == true)
+                    {
+                        captureDevice.Stop();
+                    }
+                }
+            }
+            //LOAD DƯ LIỆU
+            string pathOfFile = @"C:\Users\buikh\OneDrive\Máy tính\ReadQR\Database\Database.accdb";
+            DataTable table;
+            string nameTable = "Nhap_kho";
+            string endOfQuery = " ";
+            string query = "Select * from " + nameTable + " " + endOfQuery;
+            table = load_Data(pathOfFile, query, nameTable);
+            //hiển thị ra datatable
+            dataGridView1.DataSource = table;
+            dataGridView1.AutoSizeColumnsMode = (DataGridViewAutoSizeColumnsMode)DataGridViewAutoSizeColumnMode.Fill;
+        }
+        public void onStartScan(CancellationToken sourcetoken)
+        {
+            Task.Factory.StartNew(new Action(() =>
+            {
+                while (true)
+                {
+                    if (sourcetoken.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    Thread.Sleep(50);
+                    BarcodeReader Reader = new BarcodeReader();
+                    _ = pictureBox1.BeginInvoke(new Action(() =>
+                    {
+                        if (pictureBox1.Image != null)
+                        {
+                            try
+                            {
+                                var results = Reader.DecodeMultiple((Bitmap)pictureBox1.Image);
+                                if (results != null)
+                                {
+                                    foreach (Result result in results)
+                                    {
+                                        QRCode.Text = result.ToString();
+                                        
+                                        //SystemSounds.Beep.Play();
+                                        if (result.ResultPoints.Length > 0)
+                                        {
+                                            var offsetX = pictureBox1.SizeMode == PictureBoxSizeMode.Zoom
+                                               ? (pictureBox1.Width - pictureBox1.Image.Width) / 2 :
+                                               0;
+                                            var offsetY = pictureBox1.SizeMode == PictureBoxSizeMode.Zoom
+                                               ? (pictureBox1.Height - pictureBox1.Image.Height) / 2 :
+                                               0;
+                                            var rect = new Rectangle((int)result.ResultPoints[0].X + offsetX, (int)result.ResultPoints[0].Y + offsetY, 1, 1);
+                                            foreach (var point in result.ResultPoints)
+                                            {
+                                                if (point.X + offsetX < rect.Left)
+                                                    rect = new Rectangle((int)point.X + offsetX, rect.Y, rect.Width + rect.X - (int)point.X - offsetX, rect.Height);
+                                                if (point.X + offsetX > rect.Right)
+                                                    rect = new Rectangle(rect.X, rect.Y, rect.Width + (int)point.X - (rect.X - offsetX), rect.Height);
+                                                if (point.Y + offsetY < rect.Top)
+                                                    rect = new Rectangle(rect.X, (int)point.Y + offsetY, rect.Width, rect.Height + rect.Y - (int)point.Y - offsetY);
+                                                if (point.Y + offsetY > rect.Bottom)
+                                                    rect = new Rectangle(rect.X, rect.Y, rect.Width, rect.Height + (int)point.Y - (rect.Y - offsetY));
+                                            }
+                                            using (var g = pictureBox1.CreateGraphics())
+                                            {
+                                                using (Pen pen = new Pen(Color.Green, 5))
+                                                {
+                                                    g.DrawRectangle(pen, rect);
+
+                                                    pen.Color = Color.Yellow;
+                                                    pen.DashPattern = new float[] { 5, 5 };
+                                                    g.DrawRectangle(pen, rect);
+                                                }
+                                                g.DrawString(result.ToString(), new Font("Tahoma", 16f), Brushes.Blue, new Point(rect.X - 60, rect.Y - 50));
+
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            catch (Exception)
+                            {
+                            }
+                        }
+
+                    }));
+
+                }
+            }), sourcetoken);
+        }
+        private void Form1_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (captureDevice != null)
+                if (captureDevice.IsRunning == true)
+                    captureDevice.Stop();
+        }
+
+        private void CaptureDevice_NewFrame(object sender, NewFrameEventArgs eventArgs)
+        {
+            pictureBox1.Image = (Bitmap)eventArgs.Frame.Clone();
+        }
+
+        public void insert_update_delete_Data(string pathOffile, string strSQL)
+        {
+            try
+            {
+                string strDSN = "";
+                if (pathOffile.Substring(pathOffile.LastIndexOf('.')).ToLower() == ".accdb")
+                {
+                    strDSN = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source =" + pathOffile;
+                }
+                else
+                {
+                    strDSN = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=" + pathOffile;
+                }
+                using (OleDbConnection conn = new OleDbConnection(strDSN))
+                using (OleDbCommand cmd = new OleDbCommand(strSQL, conn))
+                {
+                    conn.Open();
+                    cmd.ExecuteNonQuery();
+                    conn.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Warning", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        //chương trình load dữ liệu:
+        public DataTable load_Data(string pathOffile, string strSQL, string nameTable)
+        {
+            DataTable dTable = null;
+            string strDSN = "";
+            if (pathOffile.Substring(pathOffile.LastIndexOf('.')).ToLower() == ".accdb")
+            {
+                strDSN = "Provider=Microsoft.ACE.OLEDB.12.0;Data Source =" + pathOffile;
+            }
+            else
+            {
+                strDSN = "Provider=Microsoft.Jet.OleDb.4.0;Data Source =" + pathOffile;
+            }
+            OleDbConnection myConn = new OleDbConnection(strDSN);
+            using (OleDbDataAdapter myCmd = new OleDbDataAdapter(strSQL, myConn))
+            {
+                try
+                {
+                    myConn.Open();
+                    DataSet dtSet = new DataSet();
+                    myCmd.Fill(dtSet, nameTable);
+                    dTable = dtSet.Tables[0];
+                    myConn.Close();
+                }
+                catch (Exception ee)
+                {
+                    MessageBox.Show(ee.Message, "Warning", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            return dTable;
+        }
+        //Connecto Access file 
+        void update(string a, string b, string c)
+        {
+            //path to the access database file
+            string connectionString = @"Provider=Microsoft.ACE.OLEDB.12.0;Data Source=C:\Users\buikh\OneDrive\Máy tính\ReadQR\Database\Database.mdb";
+            // Insert data in the database
+            string strSQL = "INSERT INTO Nhap_kho(ThoiGian, MaSanPham, GhiChu) VALUES ('" + a + "','" + b + "','" + c + "')";
+            using (OleDbConnection connection = new OleDbConnection(connectionString))
+            {
+                using (OleDbCommand command = new OleDbCommand(strSQL, connection))
+                    try
+                    {
+                        connection.Open();
+                        command.ExecuteNonQuery();
+                        connection.Close();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show("ERROR: " + ex.ToString());
+                    }
+            }
+        }
+        int get2(string a) // chương trình con lấy 2 số đầu của mã sản phẩm 
+        {
+            try
+            {
+                string bienA = a.ToCharArray()[0].ToString() + a.ToCharArray()[1].ToString();
+                return Convert.ToInt32(bienA);
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+        int masp;
+        string trangthai;
+        string nhapxuat;
+        DateTime tn = DateTime.Now;
+
+        private void textBox1_TextChanged(object sender, EventArgs e)
+        {
+            masp = get2(btStart.Text);
+            Plc plc = new Plc(CpuType.S71500, txAddressIP.Text, 0, 1);
+            if (plc.Open() == ErrorCode.NoError)
+            {
+                if (masp == 12)
+                {
+                    // Mã sản phẩm loại 1
+                    plc.Write("M44.4", 0);
+                    plc.Write("M44.5", 1);
+                    plc.Write("M44.6", 0);
+                    plc.Write("M44.7", 0);
+                    tbType.Text = "Type 1";
+                }
+                else if (masp == 23)
+                {
+                    // Mẩn phẩm loại 2
+                    plc.Write("M44.4", 0);
+                    plc.Write("M44.5", 0);
+                    plc.Write("M44.6", 1);
+                    plc.Write("M44.7", 0);
+                    tbType.Text = "Type 2";
+                }
+                else if (masp == 34)
+                {
+                    //Mã sản phẩm loại 3
+                    plc.Write("M44.4", 0);
+                    plc.Write("M44.5", 0);
+                    plc.Write("M44.6", 0);
+                    plc.Write("M44.7", 1);
+                    tbType.Text = "Type 3";
+                }
+                else
+                {
+                    //Mã sản phẩm lỗi
+                    plc.Write("M44.4", 0);
+                    plc.Write("M44.5", 0);
+                    plc.Write("M44.6", 0);
+                    plc.Write("M44.7", 1);
+                    tbType.Text = "ERROR!";
+                }
+                string giatri;
+                giatri = plc.Read("MW28").ToString();
+                nhapxuat = giatri.ToString();
+
+
+                if (nhapxuat == "1")
+                {
+                    trangthai = "IMPORT";
+                }
+                else
+                {
+                    if (nhapxuat == "2")
+                    {
+                        trangthai = "EXPORT";
+                    }
+                    else
+                    {
+                        trangthai = "Unknowned";
+                    }
+                }
+                plc.Close();
+            }
+            else
+                MessageBox.Show("Cannot connect to PLC!");
+            update(thoigian.Value.ToString(), QRCode.Text, trangthai);
+            dataGridView1.DataSource = load_Data(@"C:\Users\buikh\OneDrive\Máy tính\ReadQR\Database\Database.mdb", "SELECT * FROM Nhapkho ", "Nhapkho");
+        }
+
+        
+    }
+}
